@@ -1,11 +1,6 @@
-from __future__ import with_statement
-from __future__ import absolute_import
-import os.path as op
-import os
-from scss.compiler import Compiler
-import fnmatch
-import codecs
+from pathlib import Path
 
+from scss.compiler import Compiler
 
 class Scss(object):
     '''
@@ -54,21 +49,33 @@ class Scss(object):
     def set_asset_dir(self, asset_dir):
         asset_dir = asset_dir \
                     or self.app.config.get('SCSS_ASSET_DIR', None) \
-                    or op.join(self.app.root_path, 'assets')
-        if op.exists(op.join(asset_dir, 'scss')):
-            return op.join(asset_dir, 'scss')
-        if op.exists(asset_dir):
+                    or Path(self.app.root_path) / 'assets'
+
+        asset_dir = Path(asset_dir)
+        if not asset_dir.match('^/'):
+            asset_dir = Path(self.app.root_path) / asset_dir
+
+        if (asset_dir / 'scss').exists():
+            return asset_dir / 'scss'
+        elif asset_dir.exists():
             return asset_dir
+
         return None
 
     def set_static_dir(self, static_dir):
         static_dir = static_dir  \
                         or self.app.config.get('SCSS_STATIC_DIR', None) \
-                        or op.join(self.app.root_path, self.app.static_folder)
-        if op.exists(op.join(static_dir, 'css')):
-            return op.join(static_dir, 'css')
-        if op.exists(static_dir):
+                        or Path(self.app.root_path) / Path(self.app.static_folder)
+
+        static_dir = Path(static_dir)
+        if not static_dir.match('^/'):
+            static_dir = Path(self.app.root_path) / static_dir
+
+        if (static_dir / 'css').exists():
+            return static_dir / 'css'
+        elif static_dir.exists():
             return static_dir
+
         return None
 
     def set_hooks(self):
@@ -84,22 +91,21 @@ class Scss(object):
         self.app.before_request(self.update_scss)
 
     def discover_scss(self):
-        for folder, _, files in os.walk(self.asset_dir):
-            for filename in fnmatch.filter(files, '*.scss'):
-                src_path = op.join(folder, filename)
-                if filename.startswith('_') and src_path not in self.partials:
-                    self.partials[src_path] = op.getmtime(src_path)
-                elif src_path not in self.partials and src_path not in self.assets:
-                    dest_path = src_path.replace(
-                                    self.asset_dir,
-                                    self.static_dir
-                                ).replace('.scss', '.css')
-                    self.assets[src_path] = dest_path
+        for src_path in self.asset_dir.glob('**/*.scss'):
+            src_path = src_path.resolve()
+            filename = src_path.stem
+            if filename.startswith('_') and src_path not in self.partials:
+                self.partials[src_path] = src_path.stat().st_mtime
+            elif src_path not in self.partials and src_path not in self.assets:
+                dest_path = Path(str(src_path).replace(
+                    str(self.asset_dir),
+                    str(self.static_dir)).replace('.scss', '.css'))
+                self.assets[src_path] = dest_path
 
     def partials_have_changed(self):
         res = False
         for partial, old_mtime in self.partials.items():
-            cur_mtime = op.getmtime(partial)
+            cur_mtime = partial.stat().st_mtime
             if cur_mtime > old_mtime:
                 res = True
                 self.partials[partial] = cur_mtime
@@ -112,16 +118,17 @@ class Scss(object):
                 self.compile_scss(asset, dest_path)
             return
         for asset, dest_path in self.assets.items():
-            dest_mtime = op.getmtime(dest_path) \
-                             if op.exists(dest_path) \
-                             else -1
-            if op.getmtime(asset) > dest_mtime:
-                self.compile_scss(asset, dest_path)
+            exist = dest_path.exists()
+            dest_mtime = dest_path.stat().st_mtime if dest_path.exists() \
+                    else -1
+            if asset.stat().st_mtime > dest_mtime:
+                self.compile_scss(asset.resolve(), dest_path.resolve())
 
     def compile_scss(self, asset, dest_path):
-        self.app.logger.info("[flask-pyscss] refreshing %s" % (dest_path,))
-        if not os.path.exists(op.dirname(dest_path)):
-            os.makedirs(op.dirname(dest_path))
-        with codecs.open(dest_path, 'w', 'utf-8') as file_out:
-            with open(asset) as file_in:
+        self.app.logger.info("[flask-pyscss] refreshing %s", dest_path)
+        if not dest_path.parent.exists():
+            dest_path.parent.mkdir()
+
+        with open(dest_path, 'w') as file_out:
+            with open(asset, 'r') as file_in:
                 file_out.write(self.compiler.compile_string(file_in.read()))
